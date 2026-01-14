@@ -37,8 +37,10 @@ ALL_SPECS=false
 FULL_AUTO=false
 QUIET=false
 MAX_ITERATIONS=30
-LOG_DIR="logs"
-STATUS_FILE=".codex-status.json"
+# Use absolute path for logs based on where script is run from
+WORK_DIR="$(pwd)"
+LOG_DIR="$WORK_DIR/logs"
+STATUS_FILE="$WORK_DIR/.codex-status.json"
 
 # Create log directory
 mkdir -p "$LOG_DIR"
