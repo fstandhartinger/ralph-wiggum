@@ -236,11 +236,16 @@ Located in `scripts/`:
 
 ## Development Workflow
 
-### Creating Specifications (SpecKit approach)
+### Creating Specifications
+
+**Recommended:** We recommend [SpecKit by GitHub](https://github.com/github/spec-kit) because it provides a systematic, professional way to collect specifications for AI agent-based development. This fits perfectly with Geoffrey Huntley's original vision where the planning phase is crucial.
+
 Use `/speckit.specify` to create feature specifications:
 1. Describe the feature in natural language
 2. Agent generates professional spec with acceptance criteria
 3. Spec saved to `specs/NNN-feature-name/spec.md`
+
+**Alternatives:** You can use any system for tracking specs, features, issues, bugs, or change requests (GitHub Issues, Jira, Linear, plain markdown files, etc.). The key requirement is that each work item contains **clear, testable acceptance criteria** so the Ralph loop can determine if the exit condition is met.
 
 ### Running Ralph Loop
 1. Run `./scripts/ralph-loop.sh plan` to create task list
@@ -339,7 +344,7 @@ Tell the user:
 
 ### ✅ Ralph Wiggum is Ready!
 
-Your project is now set up with the Ralph Wiggum + SpecKit approach.
+Your project is now set up with the Ralph Wiggum autonomous development approach.
 
 **Files created:**
 - `.specify/memory/constitution.md` — Your project's source of truth
@@ -354,12 +359,14 @@ Your project is now set up with the Ralph Wiggum + SpecKit approach.
 
 **Step 1: Create Specifications**
 
-Use `/speckit.specify` (in Cursor) or describe features to me:
+**Recommended approach (SpecKit):**
 ```
 /speckit.specify Add user authentication with OAuth
 ```
 
-I'll create a professional spec with acceptance criteria.
+I'll create a professional spec with clear acceptance criteria.
+
+**Alternative:** Use any tracking system you prefer (GitHub Issues, Jira, Linear, plain markdown, etc.). Just ensure each work item has **testable acceptance criteria** — this is essential for the Ralph loop to know when a task is truly complete.
 
 **Step 2: Run Planning Mode**
 
@@ -397,8 +404,9 @@ Each iteration gets fresh context. The plan on disk is the shared state.
 
 | Action | Command |
 |--------|---------|
-| Create spec | `/speckit.specify [description]` |
-| Create task list | `./scripts/ralph-loop.sh plan` |
+| Create spec (SpecKit) | `/speckit.specify [description]` |
+| Create spec (manual) | Create `specs/NNN-feature/spec.md` with acceptance criteria |
+| Create task list | `./scripts/ralph-loop.sh plan` (optional) |
 | Start building | `./scripts/ralph-loop.sh` |
 | Max 20 iterations | `./scripts/ralph-loop.sh 20` |
 | Use Codex instead | `./scripts/ralph-loop-codex.sh` |
