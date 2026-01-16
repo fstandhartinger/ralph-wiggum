@@ -168,13 +168,51 @@ When the user is chatting with you outside of a Ralph loop:
 ### 2. Ralph Loop Mode  
 When you're running inside a Ralph bash loop:
 - Be fully autonomous
-- Pick the highest priority task from IMPLEMENTATION_PLAN.md
+- Pick the highest priority incomplete spec/task
 - Implement completely without asking
 - Test thoroughly
 - Commit and push (if Git Autonomy enabled)
+- **Maintain history** (see below)
 - Output `<promise>DONE</promise>` ONLY when task is 100% complete
 
-**How to detect your mode:** If you're being fed a prompt via stdin with instructions to pick a task from IMPLEMENTATION_PLAN.md, you're in Ralph Loop Mode.
+**How to detect your mode:** If you're being fed a prompt via stdin with instructions to pick a task or spec, you're in Ralph Loop Mode.
+
+#### History Tracking
+
+While in Ralph Loop Mode, maintain a project history to preserve learnings across context windows:
+
+**File:** `ralph_history.txt` (create if not existing)
+
+**Append entries for:**
+- 🚀 **Started** working on a spec/issue/feature/bug (one-line summary)
+- ✅ **Completed** a spec/issue/feature/bug (one-line summary with outcome)
+- 💡 **Key Breakthrough** — solved a tricky problem, found an elegant solution
+- 🚧 **Key Blocker** — hit a wall, discovered a limitation, need human help
+- 📚 **Key Learning** — discovered something important about the codebase, tools, or approach
+
+**Format example:**
+```
+[2026-01-16 14:30] 🚀 STARTED spec-007: User authentication with OAuth
+[2026-01-16 15:45] 💡 BREAKTHROUGH: Found existing auth utils in lib/auth.ts, will reuse
+[2026-01-16 16:20] ✅ COMPLETED spec-007: OAuth login working with Google provider
+[2026-01-16 16:25] 🚀 STARTED spec-008: Session management
+[2026-01-16 17:00] 🚧 BLOCKER: Redis connection fails in test env - see history/spec-008-redis-issue.md
+```
+
+**Detailed notes:** For complex issues, create a markdown file in `history/` folder and reference it:
+```
+history/
+├── spec-007-oauth-decisions.md
+├── spec-008-redis-issue.md
+└── lessons-learned-testing.md
+```
+
+**Reading history:** At the start of each Ralph loop iteration, you MAY read `ralph_history.txt` to understand:
+- What was recently worked on
+- Any blockers or learnings from previous iterations
+- Patterns in the project's development
+
+This is OPTIONAL — only read if it helps with the current task.
 
 ---
 
