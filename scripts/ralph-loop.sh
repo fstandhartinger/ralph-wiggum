@@ -1,37 +1,34 @@
 #!/bin/bash
 #
-# Ralph Loop for Claude Code - chutes-frontend
+# Ralph Loop for Claude Code
 #
-# This is a REAL Ralph loop that:
-# 1. Runs Claude with --print mode to capture output
-# 2. Parses output for <promise>DONE</promise> or <promise>ALL_DONE</promise>
-# 3. Continues iterating until completion signal detected
-# 4. Uses circuit breaker to detect stagnation
+# Based on Geoffrey Huntley's Ralph Wiggum methodology:
+# https://github.com/ghuntley/how-to-ralph-wiggum
 #
-# Based on https://github.com/frankbria/ralph-claude-code
+# Key principles:
+# - Each iteration picks ONE task from the plan
+# - Agent works until completion signal for that task
+# - Fresh context window each iteration
+# - IMPLEMENTATION_PLAN.md is shared state between loops
+# - Backpressure via tests/builds
 #
 # Usage:
-#   ./scripts/ralph-loop.sh --all              # All specs
-#   ./scripts/ralph-loop.sh --spec 001-name    # Single spec
-#   ./scripts/ralph-loop.sh --issue 42         # GitHub issue
-#   ./scripts/ralph-loop.sh "Custom prompt"    # Free-form
+#   ./scripts/ralph-loop.sh              # Build mode (unlimited)
+#   ./scripts/ralph-loop.sh 20           # Build mode (max 20 iterations)
+#   ./scripts/ralph-loop.sh plan         # Planning mode
+#   ./scripts/ralph-loop.sh plan 5       # Planning mode (max 5 iterations)
 #
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-
-# Source library components
-source "$SCRIPT_DIR/lib/date_utils.sh"
-source "$SCRIPT_DIR/lib/response_analyzer.sh"
-source "$SCRIPT_DIR/lib/circuit_breaker.sh"
+LOG_DIR="$PROJECT_DIR/logs"
 
 # Configuration
-LOG_DIR="$PROJECT_DIR/logs"
+MAX_ITERATIONS=0  # 0 = unlimited
+MODE="build"
 CLAUDE_CMD="claude"
-MAX_ITERATIONS=50
-TIMEOUT_MINUTES=30
 
 # Colors
 RED='\033[0;31m'
@@ -41,400 +38,154 @@ BLUE='\033[0;34m'
 PURPLE='\033[0;35m'
 NC='\033[0m'
 
-# Defaults
-MODE=""
-SPEC_NAME=""
-ISSUE_NUM=""
-PROMPT=""
-YOLO_MODE=true
-GIT_AUTONOMY=true
-
 mkdir -p "$LOG_DIR"
 
-# Logging
-log_status() {
-    local level=$1
-    local message=$2
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    local color=""
-    
-    case $level in
-        "INFO")  color=$BLUE ;;
-        "WARN")  color=$YELLOW ;;
-        "ERROR") color=$RED ;;
-        "SUCCESS") color=$GREEN ;;
-        "LOOP") color=$PURPLE ;;
-    esac
-    
-    echo -e "${color}[$timestamp] [$level] $message${NC}"
-    echo "[$timestamp] [$level] $message" >> "$LOG_DIR/ralph-loop.log"
+show_help() {
+    cat <<EOF
+Ralph Loop for Claude Code
+
+Based on Geoffrey Huntley's Ralph Wiggum methodology.
+https://github.com/ghuntley/how-to-ralph-wiggum
+
+Usage:
+  ./scripts/ralph-loop.sh              # Build mode, unlimited iterations
+  ./scripts/ralph-loop.sh 20           # Build mode, max 20 iterations
+  ./scripts/ralph-loop.sh plan         # Planning mode, unlimited
+  ./scripts/ralph-loop.sh plan 5       # Planning mode, max 5 iterations
+
+Modes:
+  build (default)  Implements tasks from IMPLEMENTATION_PLAN.md
+  plan             Creates/updates IMPLEMENTATION_PLAN.md from specs
+
+How it works:
+  1. Each iteration feeds PROMPT_build.md or PROMPT_plan.md to Claude via stdin
+  2. Claude picks the most important task from the plan
+  3. Claude implements, tests, commits
+  4. Loop restarts with fresh context
+  5. Continues until max iterations or manual stop (Ctrl+C)
+
+Files:
+  PROMPT_build.md          - Build mode instructions
+  PROMPT_plan.md           - Planning mode instructions
+  IMPLEMENTATION_PLAN.md   - Shared state (task list)
+  AGENTS.md                - Operational guide (how to build/test)
+  specs/                   - Requirement specifications
+
+Prerequisites:
+  - Claude Code CLI installed and authenticated
+  - Install: https://claude.ai/code
+
+EOF
 }
 
 # Parse arguments
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --all|-a)
-            MODE="all"
-            shift
-            ;;
-        --spec|-s)
-            MODE="spec"
-            SPEC_NAME="$2"
-            shift 2
-            ;;
-        --issue|-i)
-            MODE="issue"
-            ISSUE_NUM="$2"
-            shift 2
-            ;;
-        --max-iterations)
-            MAX_ITERATIONS="$2"
-            shift 2
-            ;;
-        --reset-circuit)
-            reset_circuit_breaker "Manual reset via CLI"
-            exit 0
-            ;;
-        --circuit-status)
-            show_circuit_status
-            exit 0
-            ;;
-        --help|-h)
-            cat <<EOF
-Ralph Loop for Claude Code (chutes-frontend)
-
-This script runs an actual Ralph loop that:
-- Executes Claude in --print mode to capture output
-- Parses output for completion signals (<promise>DONE</promise>)
-- Continues iterating until completion or circuit breaker trips
-
-Usage:
-  ./scripts/ralph-loop.sh --all              # All specs
-  ./scripts/ralph-loop.sh --spec 001-name    # Single spec
-  ./scripts/ralph-loop.sh --issue 42         # GitHub issue
-  ./scripts/ralph-loop.sh "Custom prompt"    # Free-form
-
-Options:
-  --all, -a              Process all work items
-  --spec, -s NAME        Process specific spec
-  --issue, -i NUM        Process specific GitHub issue
-  --max-iterations NUM   Max iterations (default: $MAX_ITERATIONS)
-  --reset-circuit        Reset circuit breaker
-  --circuit-status       Show circuit breaker status
-  --help, -h             Show this help
-
-The loop continues until:
-- <promise>DONE</promise> detected in output
-- <promise>ALL_DONE</promise> detected (for --all mode)
-- Circuit breaker opens (stagnation detected)
-- Max iterations reached
-
-EOF
-            exit 0
-            ;;
-        -*)
-            echo -e "${RED}Unknown option: $1${NC}"
-            exit 1
-            ;;
-        *)
-            MODE="prompt"
-            PROMPT="$1"
-            shift
-            ;;
-    esac
-done
+if [ "$1" = "plan" ]; then
+    MODE="plan"
+    MAX_ITERATIONS=${2:-0}
+elif [[ "$1" =~ ^[0-9]+$ ]]; then
+    MODE="build"
+    MAX_ITERATIONS=$1
+elif [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+    show_help
+    exit 0
+fi
 
 cd "$PROJECT_DIR"
 
-# Check Claude is installed
-if ! command -v claude &> /dev/null; then
-    log_status "ERROR" "Claude CLI not found!"
-    echo ""
+# Determine prompt file
+if [ "$MODE" = "plan" ]; then
+    PROMPT_FILE="PROMPT_plan.md"
+else
+    PROMPT_FILE="PROMPT_build.md"
+fi
+
+# Check if Claude CLI is available
+if ! command -v "$CLAUDE_CMD" &> /dev/null; then
+    echo -e "${RED}Error: Claude CLI not found${NC}"
     echo "Install Claude Code CLI and authenticate first."
+    echo "https://claude.ai/code"
     exit 1
 fi
 
-# Build prompts for different modes
-build_spec_prompt() {
-    local spec="$1"
-    cat <<EOF
-# RALPH LOOP - Implement Spec: $spec
-
-Read the constitution at .specify/memory/constitution.md first.
-Read the design system at chutes-projects/style/chutes_style.md.
-Then read specs/$spec/spec.md.
-
-## Your Task
-
-Implement this specification completely.
-
-## Process
-
-1. Read and understand the spec
-2. Implement all functional requirements
-3. Complete every item in the Completion Signal checklist
-4. Run tests: npm test && npx playwright test
-5. Verify visually with Browser MCP tools
-6. Check console for errors
-7. Commit and push
-
-## CRITICAL - Completion Signal
-
-When ALL items in the spec's Completion Signal checklist pass, you MUST output EXACTLY:
-
-\`<promise>DONE</promise>\`
-
-This signals completion to the Ralph loop. The loop will NOT exit until it sees this exact string.
-
-If something fails, fix it and try again. Keep iterating until everything passes.
-Then and ONLY then output: \`<promise>DONE</promise>\`
-EOF
-}
-
-build_all_specs_prompt() {
-    cat <<EOF
-# RALPH LOOP - Implement All Specs
-
-Read the constitution at .specify/memory/constitution.md first.
-Read the design system at chutes-projects/style/chutes_style.md.
-
-## Your Task
-
-Work through ALL specifications in specs/ folder, one by one, until ALL are complete.
-
-## Process
-
-1. List all specs: ls -d specs/*/
-2. For EACH spec in numerical order:
-   - Read specs/{name}/spec.md
-   - Implement all requirements
-   - Complete the Completion Signal checklist
-   - Run tests
-   - Verify visually
-   - Commit and push
-   - Output \`<promise>DONE</promise>\` when that spec is complete
-3. Move to the next spec
-4. When ALL specs are complete, output \`<promise>ALL_DONE</promise>\`
-
-## CRITICAL - Completion Signals
-
-For each individual spec, when complete output:
-\`<promise>DONE</promise>\`
-
-When ALL specs are finished, output:
-\`<promise>ALL_DONE</promise>\`
-
-The Ralph loop will NOT exit until it sees \`<promise>ALL_DONE</promise>\`.
-
-Keep working until everything is done. Fix errors and iterate.
-EOF
-}
-
-build_issue_prompt() {
-    local issue="$1"
-    cat <<EOF
-# RALPH LOOP - Resolve GitHub Issue #$issue
-
-Read the constitution at .specify/memory/constitution.md first.
-Read the design system at chutes-projects/style/chutes_style.md.
-Read the issue: gh issue view $issue
-
-## Your Task
-
-Resolve this issue completely.
-
-## Process
-
-1. Read and understand the issue
-2. Implement the fix/feature
-3. Test thoroughly
-4. Verify visually if UI-related
-5. Commit and push
-6. Close the issue: gh issue close $issue
-
-## CRITICAL - Completion Signal
-
-When the issue is fully resolved and verified, output EXACTLY:
-\`<promise>DONE</promise>\`
-
-The Ralph loop will NOT exit until it sees this.
-EOF
-}
-
-build_freeform_prompt() {
-    local user_prompt="$1"
-    cat <<EOF
-# RALPH LOOP - Custom Task
-
-Read the constitution at .specify/memory/constitution.md first.
-Read the design system at chutes-projects/style/chutes_style.md.
-
-## Your Task
-
-$user_prompt
-
-## Process
-
-1. Understand the task
-2. Implement the solution
-3. Test thoroughly
-4. Verify visually if applicable
-5. Commit and push
-
-## CRITICAL - Completion Signal
-
-When the task is 100% complete and verified, output EXACTLY:
-\`<promise>DONE</promise>\`
-
-The Ralph loop will NOT exit until it sees this.
-Keep iterating until the task is truly complete.
-EOF
-}
-
-# Execute Claude and check for completion
-execute_claude_iteration() {
-    local prompt="$1"
-    local loop_count="$2"
-    local timestamp=$(date '+%Y-%m-%d_%H-%M-%S')
-    local output_file="$LOG_DIR/claude_output_${timestamp}.log"
-    local timeout_seconds=$((TIMEOUT_MINUTES * 60))
-
-    log_status "LOOP" "Executing Claude Code (iteration $loop_count)"
-    log_status "INFO" "Timeout: ${TIMEOUT_MINUTES}m | Output: $output_file"
-
-    # Run Claude with --print to capture output
-    # Using --continue for session persistence
-    if timeout ${timeout_seconds}s claude --print --continue "$prompt" > "$output_file" 2>&1; then
-        log_status "SUCCESS" "Claude execution completed"
-        
-        # Analyze response for completion signals
-        analyze_response "$output_file" "$loop_count"
-        local analysis_result=$?
-        
-        log_analysis_summary
-        
-        # Check for file changes
-        local files_changed=$(git diff --name-only 2>/dev/null | wc -l | tr -d ' ')
-        local has_errors="false"
-        
-        if grep -qiE "(error|exception|fatal|failed)" "$output_file" 2>/dev/null; then
-            has_errors="true"
-        fi
-        
-        # Update circuit breaker
-        record_loop_result "$loop_count" "$files_changed" "$has_errors"
-        
-        # Check if completion signal was detected
-        if [[ $analysis_result -eq 1 ]]; then
-            return 1  # Completion detected
-        fi
-        
-        return 0  # Continue loop
-    else
-        local exit_code=$?
-        if [[ $exit_code -eq 124 ]]; then
-            log_status "WARN" "Claude execution timed out after ${TIMEOUT_MINUTES}m"
-        else
-            log_status "ERROR" "Claude execution failed with code $exit_code"
-        fi
-        return 0  # Continue loop (retry)
-    fi
-}
-
-# Main loop
-main() {
-    local final_prompt=""
-    local expected_signal="DONE"
-
-    # Build prompt based on mode
-    case $MODE in
-        all)
-            final_prompt=$(build_all_specs_prompt)
-            expected_signal="ALL_DONE"
-            log_status "INFO" "Starting Ralph loop for ALL specs"
-            ;;
-        spec)
-            if [[ ! -d "specs/$SPEC_NAME" ]]; then
-                log_status "ERROR" "Spec '$SPEC_NAME' not found"
-                echo "Available specs:"
-                ls -1 specs/ 2>/dev/null || echo "  (no specs found)"
-                exit 1
-            fi
-            final_prompt=$(build_spec_prompt "$SPEC_NAME")
-            log_status "INFO" "Starting Ralph loop for spec: $SPEC_NAME"
-            ;;
-        issue)
-            final_prompt=$(build_issue_prompt "$ISSUE_NUM")
-            log_status "INFO" "Starting Ralph loop for issue #$ISSUE_NUM"
-            ;;
-        prompt)
-            final_prompt=$(build_freeform_prompt "$PROMPT")
-            log_status "INFO" "Starting Ralph loop with custom prompt"
-            ;;
-        *)
-            log_status "ERROR" "Specify --all, --spec NAME, --issue NUM, or a prompt"
-            echo ""
-            echo "Usage:"
-            echo "  ./scripts/ralph-loop.sh --all"
-            echo "  ./scripts/ralph-loop.sh --spec 001-project-setup"
-            echo "  ./scripts/ralph-loop.sh --issue 42"
-            echo "  ./scripts/ralph-loop.sh \"Fix the bug\""
-            exit 1
-            ;;
-    esac
-
+# Check prompt file exists
+if [ ! -f "$PROMPT_FILE" ]; then
+    echo -e "${RED}Error: $PROMPT_FILE not found${NC}"
     echo ""
-    echo -e "${GREEN}╔═══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║           RALPH LOOP STARTING                             ║${NC}"
-    echo -e "${GREEN}╚═══════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    echo -e "${BLUE}Mode:${NC}            $MODE"
-    echo -e "${BLUE}Max iterations:${NC}  $MAX_ITERATIONS"
-    echo -e "${BLUE}Timeout:${NC}         ${TIMEOUT_MINUTES}m per iteration"
-    echo -e "${BLUE}Expected signal:${NC} <promise>${expected_signal}</promise>"
-    echo ""
-
-    # Initialize circuit breaker
-    init_circuit_breaker
-
-    local loop_count=0
-
-    while [[ $loop_count -lt $MAX_ITERATIONS ]]; do
-        loop_count=$((loop_count + 1))
-
-        log_status "LOOP" "═══════════════════ ITERATION $loop_count/$MAX_ITERATIONS ═══════════════════"
-
-        # Check circuit breaker
-        if should_halt_execution; then
-            log_status "ERROR" "Circuit breaker halted execution"
-            exit 1
-        fi
-
-        # Execute Claude
-        execute_claude_iteration "$final_prompt" "$loop_count"
-        local result=$?
-
-        if [[ $result -eq 1 ]]; then
-            echo ""
-            echo -e "${GREEN}╔═══════════════════════════════════════════════════════════╗${NC}"
-            echo -e "${GREEN}║           RALPH LOOP COMPLETE!                            ║${NC}"
-            echo -e "${GREEN}╚═══════════════════════════════════════════════════════════╝${NC}"
-            echo ""
-            echo -e "${GREEN}Completion signal detected after $loop_count iteration(s)${NC}"
-            log_status "SUCCESS" "Ralph loop completed successfully!"
-            exit 0
-        fi
-
-        # Brief pause between iterations
-        log_status "INFO" "Waiting 5s before next iteration..."
-        sleep 5
-    done
-
-    log_status "ERROR" "Max iterations ($MAX_ITERATIONS) reached without completion"
+    echo "Create prompt files first. See templates/ for examples."
     exit 1
-}
+fi
 
-# Trap for clean exit
-trap 'log_status "WARN" "Ralph loop interrupted"; exit 130' SIGINT SIGTERM
+# Get current branch
+CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "main")
 
-main
+echo ""
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}                  RALPH LOOP STARTING                        ${NC}"
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+echo -e "${BLUE}Mode:${NC}    $MODE"
+echo -e "${BLUE}Prompt:${NC}  $PROMPT_FILE"
+echo -e "${BLUE}Branch:${NC}  $CURRENT_BRANCH"
+echo -e "${YELLOW}YOLO:${NC}    ENABLED (--dangerously-skip-permissions)"
+[ $MAX_ITERATIONS -gt 0 ] && echo -e "${BLUE}Max:${NC}     $MAX_ITERATIONS iterations"
+echo ""
+echo -e "${YELLOW}Press Ctrl+C to stop the loop${NC}"
+echo ""
+
+ITERATION=0
+
+while true; do
+    # Check max iterations
+    if [ $MAX_ITERATIONS -gt 0 ] && [ $ITERATION -ge $MAX_ITERATIONS ]; then
+        echo -e "${GREEN}Reached max iterations: $MAX_ITERATIONS${NC}"
+        break
+    fi
+
+    ITERATION=$((ITERATION + 1))
+    TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+
+    echo ""
+    echo -e "${PURPLE}════════════════════ LOOP $ITERATION ════════════════════${NC}"
+    echo -e "${BLUE}[$TIMESTAMP]${NC} Starting iteration $ITERATION"
+    echo ""
+
+    # Log file for this iteration
+    LOG_FILE="$LOG_DIR/ralph_${MODE}_$(date '+%Y%m%d_%H%M%S').log"
+
+    # Run Claude with prompt via stdin
+    # -p: Headless/print mode (non-interactive)
+    # --dangerously-skip-permissions: YOLO mode
+    if cat "$PROMPT_FILE" | "$CLAUDE_CMD" -p \
+        --dangerously-skip-permissions \
+        2>&1 | tee "$LOG_FILE"; then
+        
+        echo ""
+        echo -e "${GREEN}✓ Iteration $ITERATION completed${NC}"
+        
+        # Check if DONE promise was output
+        if grep -q "<promise>DONE</promise>" "$LOG_FILE" 2>/dev/null; then
+            echo -e "${GREEN}✓ Completion signal detected${NC}"
+        else
+            echo -e "${YELLOW}No completion signal - will retry...${NC}"
+        fi
+    else
+        echo -e "${RED}✗ Iteration $ITERATION failed${NC}"
+        echo -e "${YELLOW}Check log: $LOG_FILE${NC}"
+    fi
+
+    # Push changes after each iteration
+    git push origin "$CURRENT_BRANCH" 2>/dev/null || {
+        echo -e "${YELLOW}Push failed, creating remote branch...${NC}"
+        git push -u origin "$CURRENT_BRANCH" 2>/dev/null || true
+    }
+
+    # Brief pause between iterations
+    echo ""
+    echo -e "${BLUE}Waiting 3s before next iteration...${NC}"
+    sleep 3
+done
+
+echo ""
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}           RALPH LOOP FINISHED ($ITERATION iterations)       ${NC}"
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
