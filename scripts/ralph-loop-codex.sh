@@ -116,21 +116,41 @@ watch_latest_output() {
     local log_file="$1"
     local label="${2:-Codex}"
     local target="/dev/tty"
-    local block_lines=$((ROLLING_OUTPUT_LINES + 2))
+    local use_tty=false
+    local use_tput=false
 
     [ -f "$log_file" ] || return 0
 
     if [ ! -w "$target" ]; then
         target="/dev/stdout"
+    else
+        use_tty=true
+        if command -v tput &>/dev/null; then
+            use_tput=true
+        fi
+    fi
+
+    if [ "$use_tty" = true ]; then
+        if [ "$use_tput" = true ]; then
+            tput cr > "$target"
+            tput sc > "$target"
+        else
+            printf "\r\0337" > "$target"
+        fi
     fi
 
     while true; do
         local timestamp
         timestamp=$(date '+%Y-%m-%d %H:%M:%S')
 
-        if [ "$target" = "/dev/tty" ] && [ "$ROLLING_RENDERED_LINES" -gt 0 ]; then
-            # Move cursor up, go to column 0, and clear the block.
-            printf "\033[%dA\033[0G\033[J" "$ROLLING_RENDERED_LINES" > "$target"
+        if [ "$use_tty" = true ]; then
+            if [ "$use_tput" = true ]; then
+                tput rc > "$target"
+                tput ed > "$target"
+                tput cr > "$target"
+            else
+                printf "\0338\033[J\r" > "$target"
+            fi
         fi
 
         {
@@ -142,10 +162,6 @@ watch_latest_output() {
             fi
             echo ""
         } > "$target"
-
-        if [ "$target" = "/dev/tty" ]; then
-            ROLLING_RENDERED_LINES=$block_lines
-        fi
 
         sleep "$ROLLING_OUTPUT_INTERVAL"
     done
