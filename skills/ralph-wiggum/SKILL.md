@@ -152,29 +152,6 @@ Every loop run writes **all output** to log files in `logs/`:
 - **Iteration logs:** `logs/ralph_*_iter_N_YYYYMMDD_HHMMSS.log` (per-iteration CLI output)
 - **Codex last message:** `logs/ralph_codex_output_iter_N_*.txt`
 
-### RLM Mode (Experimental)
-
-Provide a large context file and the agent will treat it as external environment.
-This is **optional and experimental** — it does not implement the full recursive runtime from the paper, but it **does** preserve all loop outputs on disk and guides the agent to query them as needed.
-
-```bash
-./scripts/ralph-loop.sh --rlm-context ./rlm/context.txt
-./scripts/ralph-loop-codex.sh --rlm-context ./rlm/context.txt
-```
-
-RLM workspace (when enabled):
-- `rlm/trace/` — Prompt snapshots per iteration
-- `rlm/index.tsv` — Index of all iterations
-- `logs/` — Full CLI output per iteration
-
-Optional recursive subcalls:
-
-```bash
-./scripts/rlm-subcall.sh --query rlm/queries/q1.md
-```
-
-This mirrors the Recursive Language Model (RLM) idea: handle huge prompts by inspecting only the slices you need.
-
 ## Two Modes
 
 | Mode | Purpose | Command |

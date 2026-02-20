@@ -430,8 +430,6 @@ Each iteration starts with a fresh context window. No context overflow, no degra
 | Start building | `./scripts/ralph-loop.sh` |
 | Use Codex | `./scripts/ralph-loop-codex.sh` |
 | Limit iterations | `./scripts/ralph-loop.sh 20` |
-| RLM mode (large context) | `./scripts/ralph-loop.sh --rlm-context ./rlm/context.txt` |
-| RLM subcall (optional) | `./scripts/rlm-subcall.sh --query rlm/queries/q1.md` |
 
 ---
 

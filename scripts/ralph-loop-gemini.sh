@@ -35,11 +35,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 LOG_DIR="$PROJECT_DIR/logs"
 CONSTITUTION="$PROJECT_DIR/.specify/memory/constitution.md"
-RLM_DIR="$PROJECT_DIR/rlm"
-RLM_TRACE_DIR="$RLM_DIR/trace"
-RLM_QUERIES_DIR="$RLM_DIR/queries"
-RLM_ANSWERS_DIR="$RLM_DIR/answers"
-RLM_INDEX="$RLM_DIR/index.tsv"
 
 # Configuration
 MAX_ITERATIONS=0  # 0 = unlimited
@@ -47,7 +42,6 @@ MODE="build"
 GEMINI_CMD="${GEMINI_CMD:-gemini}"
 GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.1-pro-preview}"
 YOLO_FLAG="--yolo"
-RLM_CONTEXT_FILE=""
 TAIL_LINES=5
 TAIL_RENDERED_LINES=0
 ROLLING_OUTPUT_LINES=5
@@ -84,8 +78,6 @@ Usage:
   ./scripts/ralph-loop-gemini.sh              # Build mode, unlimited iterations
   ./scripts/ralph-loop-gemini.sh 20           # Build mode, max 20 iterations
   ./scripts/ralph-loop-gemini.sh plan         # Planning mode (optional)
-  ./scripts/ralph-loop-gemini.sh --rlm-context ./rlm/context.txt
-  ./scripts/ralph-loop-gemini.sh --rlm ./rlm/context.txt
 
 Modes:
   build (default)  Pick spec/task and implement
@@ -100,11 +92,6 @@ The plan mode is OPTIONAL. Most projects can work directly from specs.
 Model (default: gemini-3.1-pro-preview):
   Override with: GEMINI_MODEL=gemini-2.5-pro ./scripts/ralph-loop-gemini.sh
 
-RLM Mode (optional):
-  --rlm-context <file>  Treat a large context file as external environment.
-                        The agent should read slices instead of loading it all.
-  --rlm [file]          Shortcut for --rlm-context (defaults to rlm/context.txt)
-
 How it works:
   1. Each iteration feeds PROMPT.md to Gemini CLI via stdin
   2. Gemini picks the HIGHEST PRIORITY incomplete spec/task
@@ -113,11 +100,6 @@ How it works:
   5. Bash loop checks for the magic phrase
   6. If found, loop continues to next iteration (fresh context)
   7. If not found, loop retries
-
-RLM workspace (when enabled):
-  - rlm/trace/     Prompt snapshots + outputs per iteration
-  - rlm/index.tsv  Index of all iterations (timestamp, prompt, log, status)
-  - rlm/queries/ and rlm/answers/  For optional recursive sub-queries
 
 EOF
 }
@@ -215,19 +197,6 @@ while [[ $# -gt 0 ]]; do
                 shift
             fi
             ;;
-        --rlm-context)
-            RLM_CONTEXT_FILE="${2:-}"
-            shift 2
-            ;;
-        --rlm)
-            if [[ -n "${2:-}" && "${2:0:1}" != "-" ]]; then
-                RLM_CONTEXT_FILE="$2"
-                shift 2
-            else
-                RLM_CONTEXT_FILE="rlm/context.txt"
-                shift
-            fi
-            ;;
         -h|--help)
             show_help
             exit 0
@@ -246,22 +215,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 cd "$PROJECT_DIR"
-
-# Validate RLM context file (if provided)
-if [ -n "$RLM_CONTEXT_FILE" ] && [ ! -f "$RLM_CONTEXT_FILE" ]; then
-    echo -e "${RED}Error: RLM context file not found: $RLM_CONTEXT_FILE${NC}"
-    echo "Create it first (example):"
-    echo "  mkdir -p rlm && printf \"%s\" \"<your long context>\" > $RLM_CONTEXT_FILE"
-    exit 1
-fi
-
-# Initialize RLM workspace (optional)
-if [ -n "$RLM_CONTEXT_FILE" ]; then
-    mkdir -p "$RLM_TRACE_DIR" "$RLM_QUERIES_DIR" "$RLM_ANSWERS_DIR"
-    if [ ! -f "$RLM_INDEX" ]; then
-        echo -e "timestamp\tmode\titeration\tprompt\tlog\toutput\tstatus" > "$RLM_INDEX"
-    fi
-fi
 
 # Session log (captures ALL output)
 SESSION_LOG="$LOG_DIR/ralph_gemini_${MODE}_session_$(date '+%Y%m%d_%H%M%S').log"
@@ -286,239 +239,31 @@ else
     PROMPT_FILE="PROMPT_build.md"
 fi
 
-# Create/update the build prompt to be flexible about plan vs specs
+# Generate minimal PROMPT files — constitution.md already contains the full workflow
 cat > "PROMPT_build.md" << 'BUILDEOF'
-# Ralph Build Mode
+# Ralph Loop — Build Mode
 
-Based on Geoffrey Huntley's Ralph Wiggum methodology.
+You are running inside a Ralph Wiggum autonomous loop (Context A).
 
----
+Read `.specify/memory/constitution.md` — it contains all project principles, workflow
+instructions, work sources, and completion signal requirements.
 
-## Phase 0: Orient
-
-Read `.specify/memory/constitution.md` to understand project principles and constraints.
-
----
+Find the highest-priority incomplete work item, implement it completely, verify all
+acceptance criteria, commit and push, then output `<promise>DONE</promise>`.
 BUILDEOF
 
-# Optional RLM context block
-if [ -n "$RLM_CONTEXT_FILE" ]; then
-cat >> "PROMPT_build.md" << EOF
-
-## Phase 0d: RLM Context (Optional)
-
-You have access to a large context file at:
-**$RLM_CONTEXT_FILE**
-
-Treat this file as an external environment. Do NOT paste the whole file into the prompt.
-Instead, inspect it programmatically and recursively:
-
-- Use small slices:
-  \`\`\`bash
-  sed -n 'START,ENDp' "$RLM_CONTEXT_FILE"
-  \`\`\`
-- Or Python snippets:
-  \`\`\`bash
-  python - <<'PY'
-  from pathlib import Path
-  p = Path("$RLM_CONTEXT_FILE")
-  print(p.read_text().splitlines()[START:END])
-  PY
-  \`\`\`
-- Use search:
-  \`\`\`bash
-  rg -n "pattern" "$RLM_CONTEXT_FILE"
-  \`\`\`
-
-Goal: decompose the task into smaller sub-queries and only load the pieces you need.
-This mirrors the Recursive Language Model approach from https://arxiv.org/html/2512.24601v1
-
-## RLM Workspace (Optional)
-
-Past loop outputs are preserved on disk:
-- Iteration logs: \`logs/\`
-- Prompt/output snapshots: \`rlm/trace/\`
-- Iteration index: \`rlm/index.tsv\`
-
-Use these as an external memory store (search/slice as needed).
-If you need a recursive sub-query, write a focused prompt in \`rlm/queries/\`,
-run:
-  \`./scripts/rlm-subcall.sh --query rlm/queries/<file>.md\`
-and store the result in \`rlm/answers/\`.
-EOF
-fi
-
-cat >> "PROMPT_build.md" << 'BUILDEOF'
-
-## Phase 1: Discover Work Items
-
-Search for incomplete work from these sources (in order):
-
-1. **specs/ folder** — Look for `.md` files NOT marked `## Status: COMPLETE`
-2. **IMPLEMENTATION_PLAN.md** — If exists, find unchecked `- [ ]` tasks
-3. **GitHub Issues** — Check for open issues (if this is a GitHub repo)
-4. **Any task tracker** — Jira, Linear, etc. if configured
-
-Pick the **HIGHEST PRIORITY** incomplete item:
-- Lower numbers = higher priority (001 before 010)
-- `[HIGH]` before `[MEDIUM]` before `[LOW]`
-- Bugs/blockers before features
-
-Before implementing, search the codebase to verify it's not already done.
-
----
-
-## Phase 1b: Re-Verification Mode (No Incomplete Work Found)
-
-**If ALL specs appear complete**, don't just exit — do a quality check:
-
-1. **Randomly pick** one completed spec from `specs/`
-2. **Strictly re-verify** ALL its acceptance criteria:
-   - Run the actual tests mentioned in the spec
-   - Manually verify each criterion is truly met
-   - Check edge cases
-   - Look for regressions
-3. **If any criterion fails**: Unmark the spec as complete and fix it
-4. **If all pass**: Output `<promise>DONE</promise>` to confirm quality
-
-This ensures the codebase stays healthy even when "nothing to do."
-
----
-
-## Phase 2: Implement
-
-Implement the selected spec/task completely:
-- Follow the spec's requirements exactly
-- Write clean, maintainable code
-- Add tests as needed
-
----
-
-## Phase 3: Validate
-
-Run the project's test suite and verify:
-- All tests pass
-- No lint errors
-- The spec's acceptance criteria are 100% met
-
----
-
-## Phase 4: Commit & Update
-
-1. Mark the spec/task as complete (add `## Status: COMPLETE` to spec file)
-2. `git add -A`
-3. `git commit` with a descriptive message
-4. `git push`
-
----
-
-## Completion Signal
-
-**CRITICAL:** Only output the magic phrase when the work is 100% complete.
-
-Check:
-- [ ] Implementation matches all requirements
-- [ ] All tests pass
-- [ ] All acceptance criteria verified
-- [ ] Changes committed and pushed
-- [ ] Spec marked as complete
-
-**If ALL checks pass, output:** `<promise>DONE</promise>`
-
-**If ANY check fails:** Fix the issue and try again. Do NOT output the magic phrase.
-BUILDEOF
-
-# Create planning prompt (only used if plan mode is explicitly requested)
 cat > "PROMPT_plan.md" << 'PLANEOF'
-# Ralph Planning Mode (OPTIONAL)
+# Ralph Loop — Planning Mode
 
-This mode is OPTIONAL. Most projects work fine directly from specs.
+You are running inside a Ralph Wiggum autonomous loop in planning mode.
 
-Only use this when you want a detailed breakdown of specs into smaller tasks.
+Read `.specify/memory/constitution.md` for project principles.
 
----
+Study `specs/` and compare against the current codebase (gap analysis).
+Create or update `IMPLEMENTATION_PLAN.md` with a prioritized task breakdown.
+Do NOT implement anything.
 
-## Phase 0: Orient
-
-0a. Read `.specify/memory/constitution.md` for project principles.
-
-0b. Study `specs/` to learn all feature specifications.
-
----
-PLANEOF
-
-# Optional RLM context block for planning
-if [ -n "$RLM_CONTEXT_FILE" ]; then
-cat >> "PROMPT_plan.md" << EOF
-
-## Phase 0c: RLM Context (Optional)
-
-You have access to a large context file at:
-**$RLM_CONTEXT_FILE**
-
-Treat this file as an external environment. Do NOT paste the whole file into the prompt.
-Inspect only the slices you need using shell tools or Python.
-This mirrors the Recursive Language Model approach from https://arxiv.org/html/2512.24601v1
-
-## RLM Workspace (Optional)
-
-Past loop outputs are preserved on disk:
-- Iteration logs: \`logs/\`
-- Prompt/output snapshots: \`rlm/trace/\`
-- Iteration index: \`rlm/index.tsv\`
-
-Use these as an external memory store (search/slice as needed).
-For recursive sub-queries, use:
-  \`./scripts/rlm-subcall.sh --query rlm/queries/<file>.md\`
-EOF
-fi
-
-cat >> "PROMPT_plan.md" << 'PLANEOF'
-
-## Phase 1: Gap Analysis
-
-Compare specs against current codebase:
-- What's fully implemented?
-- What's partially done?
-- What's not started?
-- What has issues or bugs?
-
----
-
-## Phase 2: Create Plan
-
-Create `IMPLEMENTATION_PLAN.md` with a prioritized task list:
-
-```markdown
-# Implementation Plan
-
-> Auto-generated breakdown of specs into tasks.
-> Delete this file to return to working directly from specs.
-
-## Priority Tasks
-
-- [ ] [HIGH] Task description - from spec NNN
-- [ ] [HIGH] Task description - from spec NNN
-- [ ] [MEDIUM] Task description
-- [ ] [LOW] Task description
-
-## Completed
-
-- [x] Completed task
-```
-
-Prioritize by:
-1. Dependencies (do prerequisites first)
-2. Impact (high-value features first)
-3. Complexity (mix easy wins with harder tasks)
-
----
-
-## Completion Signal
-
-When the plan is complete and saved:
-
-`<promise>DONE</promise>`
+When the plan is complete, output `<promise>DONE</promise>`.
 PLANEOF
 
 # Check prompt file exists
@@ -539,13 +284,15 @@ fi
 # Get current branch
 CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "main")
 
-# Check for work sources - count .md files in specs/
+# Check for work sources - count .md files in .specify/specs/ (or legacy specs/)
 HAS_PLAN=false
 HAS_SPECS=false
 SPEC_COUNT=0
 [ -f "IMPLEMENTATION_PLAN.md" ] && HAS_PLAN=true
-if [ -d "specs" ]; then
-    SPEC_COUNT=$(find specs -maxdepth 1 -name "*.md" -type f 2>/dev/null | wc -l)
+SPECS_DIR=".specify/specs"
+[ ! -d "$SPECS_DIR" ] && SPECS_DIR="specs"
+if [ -d "$SPECS_DIR" ]; then
+    SPEC_COUNT=$(find "$SPECS_DIR" -maxdepth 1 -name "*.md" -type f 2>/dev/null | wc -l)
     [ "$SPEC_COUNT" -gt 0 ] && HAS_SPECS=true
 fi
 
@@ -559,7 +306,6 @@ echo -e "${BLUE}Model:${NC}    $GEMINI_MODEL"
 echo -e "${BLUE}Prompt:${NC}   $PROMPT_FILE"
 echo -e "${BLUE}Branch:${NC}   $CURRENT_BRANCH"
 echo -e "${YELLOW}YOLO:${NC}     $([ "$YOLO_ENABLED" = true ] && echo "ENABLED" || echo "DISABLED")"
-[ -n "$RLM_CONTEXT_FILE" ] && echo -e "${BLUE}RLM:${NC}      $RLM_CONTEXT_FILE"
 [ -n "$SESSION_LOG" ] && echo -e "${BLUE}Log:${NC}      $SESSION_LOG"
 [ $MAX_ITERATIONS -gt 0 ] && echo -e "${BLUE}Max:${NC}      $MAX_ITERATIONS iterations"
 echo ""
@@ -570,9 +316,9 @@ else
     echo -e "  ${YELLOW}○${NC} IMPLEMENTATION_PLAN.md (not found, that's OK)"
 fi
 if [ "$HAS_SPECS" = true ]; then
-    echo -e "  ${GREEN}✓${NC} specs/ folder ($SPEC_COUNT specs)"
+    echo -e "  ${GREEN}✓${NC} $SPECS_DIR/ folder ($SPEC_COUNT specs)"
 else
-    echo -e "  ${RED}✗${NC} specs/ folder (no .md files found)"
+    echo -e "  ${RED}✗${NC} specs/ folder (no .md files found in specs/ or .specify/specs/)"
 fi
 echo ""
 echo -e "${CYAN}The loop checks for <promise>DONE</promise> in each iteration.${NC}"
@@ -609,13 +355,6 @@ while true; do
         watch_latest_output "$LOG_FILE" "Gemini" &
         WATCH_PID=$!
     fi
-    RLM_STATUS="unknown"
-
-    # Snapshot prompt (optional RLM workspace)
-    if [ -n "$RLM_CONTEXT_FILE" ]; then
-        RLM_PROMPT_SNAPSHOT="$RLM_TRACE_DIR/iter_${ITERATION}_prompt.md"
-        cp "$PROMPT_FILE" "$RLM_PROMPT_SNAPSHOT"
-    fi
 
     # Run Gemini CLI with prompt piped via stdin
     # -p "" enables non-interactive mode; stdin is appended before -p value
@@ -636,7 +375,6 @@ while true; do
             echo -e "${GREEN}✓ Completion signal detected: ${DETECTED_SIGNAL}${NC}"
             echo -e "${GREEN}✓ Task completed successfully!${NC}"
             CONSECUTIVE_FAILURES=0
-            RLM_STATUS="done"
 
             # For planning mode, stop after one successful plan
             if [ "$MODE" = "plan" ]; then
@@ -652,7 +390,6 @@ while true; do
             echo -e "${YELLOW}  This means acceptance criteria were not met.${NC}"
             echo -e "${YELLOW}  Retrying in next iteration...${NC}"
             CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
-            RLM_STATUS="incomplete"
             print_latest_output "$LOG_FILE" "Gemini"
 
             if [ $CONSECUTIVE_FAILURES -ge $MAX_CONSECUTIVE_FAILURES ]; then
@@ -674,16 +411,7 @@ while true; do
         echo -e "${RED}✗ Gemini execution failed${NC}"
         echo -e "${YELLOW}Check log: $LOG_FILE${NC}"
         CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
-        RLM_STATUS="error"
         print_latest_output "$LOG_FILE" "Gemini"
-    fi
-
-    # Record iteration in RLM index (optional)
-    if [ -n "$RLM_CONTEXT_FILE" ]; then
-        RLM_PROMPT_PATH="${RLM_PROMPT_SNAPSHOT:-}"
-        RLM_OUTPUT_SNAPSHOT="$RLM_TRACE_DIR/iter_${ITERATION}_output.log"
-        cp "$LOG_FILE" "$RLM_OUTPUT_SNAPSHOT"
-        echo -e "${TIMESTAMP}\t${MODE}\t${ITERATION}\t${RLM_PROMPT_PATH}\t${LOG_FILE}\t${RLM_OUTPUT_SNAPSHOT}\t${RLM_STATUS}" >> "$RLM_INDEX"
     fi
 
     # Push changes after each iteration (if any)

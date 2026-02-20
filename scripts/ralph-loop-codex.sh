@@ -18,16 +18,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 LOG_DIR="$PROJECT_DIR/logs"
 CONSTITUTION="$PROJECT_DIR/.specify/memory/constitution.md"
-RLM_DIR="$PROJECT_DIR/rlm"
-RLM_TRACE_DIR="$RLM_DIR/trace"
-RLM_QUERIES_DIR="$RLM_DIR/queries"
-RLM_ANSWERS_DIR="$RLM_DIR/answers"
-RLM_INDEX="$RLM_DIR/index.tsv"
 
 # Configuration
 MAX_ITERATIONS=0  # 0 = unlimited
 MODE="build"
-RLM_CONTEXT_FILE=""
 CODEX_CMD="${CODEX_CMD:-codex}"
 TAIL_LINES=5
 TAIL_RENDERED_LINES=0
@@ -62,8 +56,6 @@ Usage:
   ./scripts/ralph-loop-codex.sh              # Build mode, unlimited
   ./scripts/ralph-loop-codex.sh 20           # Build mode, max 20 iterations
   ./scripts/ralph-loop-codex.sh plan         # Planning mode (OPTIONAL)
-  ./scripts/ralph-loop-codex.sh --rlm-context ./rlm/context.txt
-  ./scripts/ralph-loop-codex.sh --rlm ./rlm/context.txt
 
 Modes:
   build (default)  Pick incomplete spec and implement
@@ -73,16 +65,6 @@ Work Source:
   Agent reads specs/*.md and picks the highest priority incomplete spec.
 
 YOLO Mode: Uses --dangerously-bypass-approvals-and-sandbox
-
-RLM Mode (optional):
-  --rlm-context <file>  Treat a large context file as external environment.
-                        The agent should read slices instead of loading it all.
-  --rlm [file]          Shortcut for --rlm-context (defaults to rlm/context.txt)
-
-RLM workspace (when enabled):
-  - rlm/trace/     Prompt snapshots + outputs per iteration
-  - rlm/index.tsv  Index of all iterations (timestamp, prompt, log, status)
-  - rlm/queries/ and rlm/answers/  For optional recursive sub-queries
 
 EOF
 }
@@ -180,19 +162,6 @@ while [[ $# -gt 0 ]]; do
                 shift
             fi
             ;;
-        --rlm-context)
-            RLM_CONTEXT_FILE="${2:-}"
-            shift 2
-            ;;
-        --rlm)
-            if [[ -n "${2:-}" && "${2:0:1}" != "-" ]]; then
-                RLM_CONTEXT_FILE="$2"
-                shift 2
-            else
-                RLM_CONTEXT_FILE="rlm/context.txt"
-                shift
-            fi
-            ;;
         -h|--help)
             show_help
             exit 0
@@ -211,22 +180,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 cd "$PROJECT_DIR"
-
-# Validate RLM context file (if provided)
-if [ -n "$RLM_CONTEXT_FILE" ] && [ ! -f "$RLM_CONTEXT_FILE" ]; then
-    echo -e "${RED}Error: RLM context file not found: $RLM_CONTEXT_FILE${NC}"
-    echo "Create it first (example):"
-    echo "  mkdir -p rlm && printf \"%s\" \"<your long context>\" > $RLM_CONTEXT_FILE"
-    exit 1
-fi
-
-# Initialize RLM workspace (optional)
-if [ -n "$RLM_CONTEXT_FILE" ]; then
-    mkdir -p "$RLM_TRACE_DIR" "$RLM_QUERIES_DIR" "$RLM_ANSWERS_DIR"
-    if [ ! -f "$RLM_INDEX" ]; then
-        echo -e "timestamp\tmode\titeration\tprompt\tlog\toutput\tstatus" > "$RLM_INDEX"
-    fi
-fi
 
 # Session log (captures ALL output)
 SESSION_LOG="$LOG_DIR/ralph_codex_${MODE}_session_$(date '+%Y%m%d_%H%M%S').log"
@@ -251,166 +204,32 @@ else
     PROMPT_FILE="PROMPT_build.md"
 fi
 
-# Create prompt files if they don't exist (same as ralph-loop.sh)
-if [ ! -f "PROMPT_build.md" ]; then
-    echo -e "${YELLOW}Creating PROMPT_build.md...${NC}"
-    cat > "PROMPT_build.md" << 'BUILDEOF'
-# Ralph Build Mode
+# Generate minimal PROMPT files — constitution.md already contains the full workflow
+cat > "PROMPT_build.md" << 'BUILDEOF'
+# Ralph Loop — Build Mode
 
-Based on Geoffrey Huntley's Ralph Wiggum methodology.
+You are running inside a Ralph Wiggum autonomous loop (Context A).
 
----
+Read `.specify/memory/constitution.md` — it contains all project principles, workflow
+instructions, work sources, and completion signal requirements.
 
-## Phase 0: Orient
-
-Read `.specify/memory/constitution.md` to understand project principles and constraints.
-
----
-
-## Phase 1: Discover Work Items
-
-Search for incomplete work from these sources (in order):
-
-1. **specs/ folder** — Look for `.md` files NOT marked `## Status: COMPLETE`
-2. **IMPLEMENTATION_PLAN.md** — If exists, find unchecked `- [ ]` tasks
-3. **GitHub Issues** — Check for open issues (if this is a GitHub repo)
-4. **Any task tracker** — Jira, Linear, etc. if configured
-
-Pick the **HIGHEST PRIORITY** incomplete item:
-- Lower numbers = higher priority (001 before 010)
-- `[HIGH]` before `[MEDIUM]` before `[LOW]`
-- Bugs/blockers before features
-
-Before implementing, search the codebase to verify it's not already done.
-
----
-
-## Phase 1b: Re-Verification Mode (No Incomplete Work Found)
-
-**If ALL specs appear complete**, don't just exit — do a quality check:
-
-1. **Randomly pick** one completed spec from `specs/`
-2. **Strictly re-verify** ALL its acceptance criteria:
-   - Run the actual tests mentioned in the spec
-   - Manually verify each criterion is truly met
-   - Check edge cases
-   - Look for regressions
-3. **If any criterion fails**: Unmark the spec as complete and fix it
-4. **If all pass**: Output `<promise>DONE</promise>` to confirm quality
-
-This ensures the codebase stays healthy even when "nothing to do."
-
----
-
-## Phase 2: Implement
-
-Implement the selected spec/task completely:
-- Follow the spec's requirements exactly
-- Write clean, maintainable code
-- Add tests as needed
-
----
-
-## Phase 3: Validate
-
-Run the project's test suite and verify:
-- All tests pass
-- No lint errors
-- The spec's acceptance criteria are 100% met
-
----
-
-## Phase 4: Commit & Update
-
-1. Mark the spec/task as complete (add `## Status: COMPLETE` to spec file)
-2. `git add -A`
-3. `git commit` with a descriptive message
-4. `git push`
-
----
-
-## Completion Signal
-
-**CRITICAL:** Only output the magic phrase when the work is 100% complete.
-
-Check:
-- [ ] Implementation matches all requirements
-- [ ] All tests pass
-- [ ] All acceptance criteria verified
-- [ ] Changes committed and pushed
-- [ ] Spec marked as complete
-
-**If ALL checks pass, output:** `<promise>DONE</promise>`
-
-**If ANY check fails:** Fix the issue and try again. Do NOT output the magic phrase.
+Find the highest-priority incomplete work item, implement it completely, verify all
+acceptance criteria, commit and push, then output `<promise>DONE</promise>`.
 BUILDEOF
-fi
 
-if [ ! -f "PROMPT_plan.md" ]; then
-    echo -e "${YELLOW}Creating PROMPT_plan.md...${NC}"
-    cat > "PROMPT_plan.md" << 'PLANEOF'
-# Ralph Planning Mode (OPTIONAL)
+cat > "PROMPT_plan.md" << 'PLANEOF'
+# Ralph Loop — Planning Mode
 
-This mode is OPTIONAL. Most projects work fine directly from specs.
+You are running inside a Ralph Wiggum autonomous loop in planning mode.
 
-Only use this when you want a detailed breakdown of specs into smaller tasks.
+Read `.specify/memory/constitution.md` for project principles.
 
----
+Study `specs/` and compare against the current codebase (gap analysis).
+Create or update `IMPLEMENTATION_PLAN.md` with a prioritized task breakdown.
+Do NOT implement anything.
 
-## Phase 0: Orient
-
-0a. Read `.specify/memory/constitution.md` for project principles.
-
-0b. Study `specs/` to learn all feature specifications.
-
----
-
-## Phase 1: Gap Analysis
-
-Compare specs against current codebase:
-- What's fully implemented?
-- What's partially done?
-- What's not started?
-- What has issues or bugs?
-
----
-
-## Phase 2: Create Plan
-
-Create `IMPLEMENTATION_PLAN.md` with a prioritized task list:
-
-```markdown
-# Implementation Plan
-
-> Auto-generated breakdown of specs into tasks.
-> Delete this file to return to working directly from specs.
-
-## Priority Tasks
-
-- [ ] [HIGH] Task description - from spec NNN
-- [ ] [HIGH] Task description - from spec NNN  
-- [ ] [MEDIUM] Task description
-- [ ] [LOW] Task description
-
-## Completed
-
-- [x] Completed task
-```
-
-Prioritize by:
-1. Dependencies (do prerequisites first)
-2. Impact (high-value features first)
-3. Complexity (mix easy wins with harder tasks)
-
----
-
-## Completion Signal
-
-When the plan is complete and saved:
-
-`<promise>DONE</promise>`
+When the plan is complete, output `<promise>DONE</promise>`.
 PLANEOF
-fi
 
 # Build Codex flags for exec mode
 CODEX_FLAGS="exec"
@@ -438,7 +257,6 @@ echo -e "${BLUE}Mode:${NC}     $MODE"
 echo -e "${BLUE}Prompt:${NC}   $PROMPT_FILE"
 echo -e "${BLUE}Branch:${NC}   $CURRENT_BRANCH"
 echo -e "${YELLOW}YOLO:${NC}     $([ "$YOLO_ENABLED" = true ] && echo "ENABLED" || echo "DISABLED")"
-[ -n "$RLM_CONTEXT_FILE" ] && echo -e "${BLUE}RLM:${NC}      $RLM_CONTEXT_FILE"
 [ -n "$SESSION_LOG" ] && echo -e "${BLUE}Log:${NC}      $SESSION_LOG"
 [ $MAX_ITERATIONS -gt 0 ] && echo -e "${BLUE}Max:${NC}      $MAX_ITERATIONS iterations"
 echo ""
@@ -477,7 +295,6 @@ while true; do
     # Log file for this iteration
     LOG_FILE="$LOG_DIR/ralph_codex_${MODE}_iter_${ITERATION}_$(date '+%Y%m%d_%H%M%S').log"
     OUTPUT_FILE="$LOG_DIR/ralph_codex_output_iter_${ITERATION}_$(date '+%Y%m%d_%H%M%S').txt"
-    RLM_STATUS="unknown"
     : > "$LOG_FILE"
     WATCH_PID=""
 
@@ -486,66 +303,13 @@ while true; do
         WATCH_PID=$!
     fi
 
-    # Optional RLM context block appended to prompt at runtime
-    EFFECTIVE_PROMPT_FILE="$PROMPT_FILE"
-    if [ -n "$RLM_CONTEXT_FILE" ]; then
-        EFFECTIVE_PROMPT_FILE="$LOG_DIR/ralph_codex_prompt_iter_${ITERATION}_$(date '+%Y%m%d_%H%M%S').md"
-        cat "$PROMPT_FILE" > "$EFFECTIVE_PROMPT_FILE"
-        cat >> "$EFFECTIVE_PROMPT_FILE" << EOF
-
----
-## RLM Context (Optional)
-
-You have access to a large context file at:
-**$RLM_CONTEXT_FILE**
-
-Treat this file as an external environment. Do NOT paste the whole file into the prompt.
-Instead, inspect it programmatically and recursively:
-
-- Use small slices:
-  \`\`\`bash
-  sed -n 'START,ENDp' "$RLM_CONTEXT_FILE"
-  \`\`\`
-- Or Python snippets:
-  \`\`\`bash
-  python - <<'PY'
-  from pathlib import Path
-  p = Path("$RLM_CONTEXT_FILE")
-  print(p.read_text().splitlines()[START:END])
-  PY
-  \`\`\`
-- Use search:
-  \`\`\`bash
-  rg -n "pattern" "$RLM_CONTEXT_FILE"
-  \`\`\`
-
-Goal: decompose the task into smaller sub-queries and only load the pieces you need.
-This mirrors the Recursive Language Model approach from https://arxiv.org/html/2512.24601v1
-
-## RLM Workspace (Optional)
-
-Past loop outputs are preserved on disk:
-- Iteration logs: \`logs/\`
-- Prompt/output snapshots: \`rlm/trace/\`
-- Iteration index: \`rlm/index.tsv\`
-
-Use these as an external memory store (search/slice as needed).
-If you need a recursive sub-query, write a focused prompt in \`rlm/queries/\`,
-run:
-  \`./scripts/rlm-subcall.sh --query rlm/queries/<file>.md\`
-and store the result in \`rlm/answers/\`.
-EOF
-        RLM_PROMPT_SNAPSHOT="$RLM_TRACE_DIR/iter_${ITERATION}_prompt.md"
-        cp "$EFFECTIVE_PROMPT_FILE" "$RLM_PROMPT_SNAPSHOT"
-    fi
-
     # Run Codex with exec mode, reading prompt from stdin with "-"
     # Use --output-last-message to capture the final response for checking
-    echo -e "${BLUE}Running: cat $EFFECTIVE_PROMPT_FILE | $CODEX_CMD $CODEX_FLAGS - --output-last-message $OUTPUT_FILE${NC}"
+    echo -e "${BLUE}Running: cat $PROMPT_FILE | $CODEX_CMD $CODEX_FLAGS - --output-last-message $OUTPUT_FILE${NC}"
     echo ""
     
     CODEX_EXIT=0
-    if cat "$EFFECTIVE_PROMPT_FILE" | "$CODEX_CMD" $CODEX_FLAGS - --output-last-message "$OUTPUT_FILE" 2>&1 | tee "$LOG_FILE"; then
+    if cat "$PROMPT_FILE" | "$CODEX_CMD" $CODEX_FLAGS - --output-last-message "$OUTPUT_FILE" 2>&1 | tee "$LOG_FILE"; then
         if [ -n "$WATCH_PID" ]; then
             kill "$WATCH_PID" 2>/dev/null || true
             wait "$WATCH_PID" 2>/dev/null || true
@@ -559,7 +323,6 @@ EOF
             echo -e "${GREEN}✓ Completion signal detected: ${DETECTED_SIGNAL}${NC}"
             echo -e "${GREEN}✓ Task completed successfully!${NC}"
             CONSECUTIVE_FAILURES=0
-            RLM_STATUS="done"
             
             if [ "$MODE" = "plan" ]; then
                 echo ""
@@ -572,13 +335,11 @@ EOF
             echo -e "${GREEN}✓ Completion signal detected: ${DETECTED_SIGNAL}${NC}"
             echo -e "${GREEN}✓ Task completed successfully!${NC}"
             CONSECUTIVE_FAILURES=0
-            RLM_STATUS="done"
         else
             echo -e "${YELLOW}⚠ No completion signal found${NC}"
             echo -e "${YELLOW}  Agent did not output <promise>DONE</promise> or <promise>ALL_DONE</promise>${NC}"
             echo -e "${YELLOW}  Retrying in next iteration...${NC}"
             CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
-            RLM_STATUS="incomplete"
             print_latest_output "$LOG_FILE" "Codex"
             
             if [ $CONSECUTIVE_FAILURES -ge $MAX_CONSECUTIVE_FAILURES ]; then
@@ -599,21 +360,7 @@ EOF
         echo -e "${RED}✗ Codex execution failed (exit code: $CODEX_EXIT)${NC}"
         echo -e "${YELLOW}Check log: $LOG_FILE${NC}"
         CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
-        RLM_STATUS="error"
         print_latest_output "$LOG_FILE" "Codex"
-    fi
-
-    # Record iteration in RLM index (optional)
-    if [ -n "$RLM_CONTEXT_FILE" ]; then
-        RLM_PROMPT_PATH="${RLM_PROMPT_SNAPSHOT:-}"
-        RLM_OUTPUT_SNAPSHOT="$RLM_TRACE_DIR/iter_${ITERATION}_output.log"
-        cp "$LOG_FILE" "$RLM_OUTPUT_SNAPSHOT"
-        if [ -f "$OUTPUT_FILE" ]; then
-            RLM_LAST_MESSAGE_SNAPSHOT="$RLM_TRACE_DIR/iter_${ITERATION}_last_message.txt"
-            cp "$OUTPUT_FILE" "$RLM_LAST_MESSAGE_SNAPSHOT"
-        fi
-        RLM_OUTPUT_PATH="${RLM_LAST_MESSAGE_SNAPSHOT:-$RLM_OUTPUT_SNAPSHOT}"
-        echo -e "${TIMESTAMP}\t${MODE}\t${ITERATION}\t${RLM_PROMPT_PATH}\t${LOG_FILE}\t${RLM_OUTPUT_PATH}\t${RLM_STATUS}" >> "$RLM_INDEX"
     fi
 
     # Push changes after each iteration
