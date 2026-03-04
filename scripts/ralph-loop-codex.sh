@@ -323,7 +323,14 @@ while true; do
             echo -e "${GREEN}✓ Completion signal detected: ${DETECTED_SIGNAL}${NC}"
             echo -e "${GREEN}✓ Task completed successfully!${NC}"
             CONSECUTIVE_FAILURES=0
-            
+
+            # Stop if ALL_DONE — all specs finished
+            if echo "$DETECTED_SIGNAL" | grep -q "ALL_DONE"; then
+                echo ""
+                echo -e "${GREEN}All specs complete! Nothing left to do.${NC}"
+                break
+            fi
+
             if [ "$MODE" = "plan" ]; then
                 echo ""
                 echo -e "${GREEN}Planning complete!${NC}"
@@ -335,6 +342,13 @@ while true; do
             echo -e "${GREEN}✓ Completion signal detected: ${DETECTED_SIGNAL}${NC}"
             echo -e "${GREEN}✓ Task completed successfully!${NC}"
             CONSECUTIVE_FAILURES=0
+
+            # Stop if ALL_DONE — all specs finished
+            if echo "$DETECTED_SIGNAL" | grep -q "ALL_DONE"; then
+                echo ""
+                echo -e "${GREEN}All specs complete! Nothing left to do.${NC}"
+                break
+            fi
         else
             echo -e "${YELLOW}⚠ No completion signal found${NC}"
             echo -e "${YELLOW}  Agent did not output <promise>DONE</promise> or <promise>ALL_DONE</promise>${NC}"
