@@ -238,6 +238,17 @@ PowerShell:
 .\scripts\ralph-loop-codex.ps1
 ```
 
+### Using Antigravity CLI Instead
+
+```bash
+./scripts/ralph-loop-agy.sh plan
+./scripts/ralph-loop-agy.sh
+./scripts/ralph-loop-agy.sh --model gemini-2.5-pro  # Override model
+```
+
+By default, model selection is set to `auto` — agy picks the best available model.
+Override via `--model` flag or `AGY_MODEL` environment variable.
+
 ---
 
 ## File Structure
@@ -258,6 +269,7 @@ project/
 │   ├── ralph-loop-gemini.ps1     # Google Gemini loop for PowerShell
 │   ├── ralph-loop-copilot.sh     # GitHub Copilot loop
 │   ├── ralph-loop-copilot.ps1    # GitHub Copilot loop for PowerShell
+│   ├── ralph-loop-agy.sh         # Antigravity CLI loop
 │   └── lib/                      # Shared shell and PowerShell helpers
 ├── AGENTS.md                     # Points to constitution
 └── CLAUDE.md                     # Points to constitution
@@ -308,7 +320,7 @@ Ralph Wiggum follows the [Agent Skills specification](https://agentskills.io) an
 | [OpenSkills](https://github.com/numman-ali/openskills) | `openskills install fstandhartinger/ralph-wiggum` |
 | [Skillset](https://github.com/climax-tools/skillset) | `skillset add fstandhartinger/ralph-wiggum` |
 
-Works with: **Claude Code**, **Cursor**, **Codex**, **Windsurf**, **Amp**, **OpenCode**, and more.
+Works with: **Claude Code**, **Cursor**, **Codex**, **Windsurf**, **Amp**, **OpenCode**, **Antigravity CLI**, and more.
 
 ---
 
